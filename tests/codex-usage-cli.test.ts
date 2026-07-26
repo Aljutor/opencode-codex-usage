@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import test from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,4 +142,29 @@ test("resolveTuiConfigPath targets tui config beside opencode config", () => {
     resolveTuiConfigPath("/home/alice/.config/opencode/opencode.jsonc"),
     "/home/alice/.config/opencode/tui.json",
   );
+});
+
+test("install reports one summary when server and TUI plugins are already configured", async () => {
+  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)), "..");
+  const cliPath = path.join(projectRoot, "dist", "bin", "opencode-codex-usage.js");
+  const pluginPath = resolvePluginInstallPath(path.join(projectRoot, "dist", "lib"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "opencode-codex-usage-"));
+  const configPath = path.join(tempDir, "opencode.jsonc");
+  const config = `${JSON.stringify({ plugin: [pluginPath] }, null, 2)}\n`;
+
+  try {
+    await writeFile(configPath, config, "utf8");
+    await writeFile(resolveTuiConfigPath(configPath), config, "utf8");
+
+    const stdout = execFileSync(process.execPath, [cliPath, "--install", "--config", configPath], {
+      encoding: "utf8",
+    });
+
+    assert.equal(
+      stdout,
+      "No changes needed. Server and TUI plugins are already configured.\n",
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });

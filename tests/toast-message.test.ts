@@ -13,6 +13,17 @@ test("labels usage with compact window summary", () => {
   assert.equal(message, "⏳ 5h: 81% used, reset 1h0m | 7d: 9% used, reset 7d0h");
 });
 
+test("omits an empty secondary lane without a window duration", () => {
+  const message = messageFromParsed({
+    status: "ok",
+    used: { primary: 3, secondary: 0 },
+    reset: { primary: "6d23h", secondary: "0m" },
+    windowMinutes: { primary: 10080, secondary: null },
+  });
+
+  assert.equal(message, "⏳ 7d: 3% used, reset 6d23h");
+});
+
 test("falls back to compact placeholders for missing metric values", () => {
   const message = messageFromParsed({
     status: "ok",

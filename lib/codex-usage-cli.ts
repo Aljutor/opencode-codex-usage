@@ -271,7 +271,7 @@ const writeSignalFileSafely = async (signalPath: string, stamp: string): Promise
   }
 };
 
-const runInstall = async (configPath: string): Promise<void> => {
+const runInstall = async (configPath: string): Promise<boolean> => {
   const pluginPath = pluginPathFromModule();
   const pluginStat = await lstatIfExists(pluginPath);
 
@@ -294,7 +294,7 @@ const runInstall = async (configPath: string): Promise<void> => {
 }\n`;
     await writeFile(configPath, freshConfig, "utf8");
     process.stdout.write(`Created ${configPath} with plugin path.\n`);
-    return;
+    return true;
   }
 
   const content = await readFile(configPath, "utf8");
@@ -317,12 +317,12 @@ const runInstall = async (configPath: string): Promise<void> => {
   }
 
   if (!updated) {
-    process.stdout.write(`No changes needed. Plugin path is already configured.\n`);
-    return;
+    return false;
   }
 
   await writeFile(configPath, nextContent, "utf8");
   process.stdout.write(`Updated ${configPath} with plugin path.\n`);
+  return true;
 };
 
 const runUninstall = async (configPath: string): Promise<void> => {
@@ -466,8 +466,13 @@ export const runCli = async (argv: string[] = process.argv.slice(2)): Promise<vo
     const configPath = options.configPath ? path.resolve(options.configPath) : defaultConfigPath;
     const tuiConfigPath = resolveTuiConfigPath(configPath);
     if (options.install) {
-      await runInstall(configPath);
-      await runInstall(tuiConfigPath);
+      const serverChanged = await runInstall(configPath);
+      const tuiChanged = await runInstall(tuiConfigPath);
+      if (!serverChanged && !tuiChanged) {
+        process.stdout.write(
+          `No changes needed. Server and TUI plugins are already configured.\n`,
+        );
+      }
     } else {
       await runUninstall(configPath);
       await runUninstall(tuiConfigPath);

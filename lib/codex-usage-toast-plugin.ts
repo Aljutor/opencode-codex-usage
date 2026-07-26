@@ -355,7 +355,27 @@ export const messageFromParsed = (parsed: ProbeSnapshot): string => {
   const secondWindowLabel = windowLabelFromMinutes(windowB, "B").replace(/\s+window$/, "");
   const [usedWindowA, usedWindowB] = pairFromUnknown(parsed.used);
   const [resetWindowA, resetWindowB] = pairFromUnknown(parsed.reset);
-  const compact = `${firstWindowLabel}: ${usageText(usedWindowA)} used, reset ${resetWindowA} | ${secondWindowLabel}: ${usageText(usedWindowB)} used, reset ${resetWindowB}`;
+  const windows = [
+    {
+      minutes: windowA,
+      label: firstWindowLabel,
+      used: usedWindowA,
+      reset: resetWindowA,
+    },
+    {
+      minutes: windowB,
+      label: secondWindowLabel,
+      used: usedWindowB,
+      reset: resetWindowB,
+    },
+  ];
+  const compact = windows
+    .filter(
+      ({ minutes, used, reset }) =>
+        minutes !== undefined || Number.parseFloat(used) !== 0 || reset !== "0m",
+    )
+    .map(({ label, used, reset }) => `${label}: ${usageText(used)} used, reset ${reset}`)
+    .join(" | ");
   return `⏳ ${compact}`;
 };
 
