@@ -23,14 +23,14 @@ test("resolves Windows default from LOCALAPPDATA", () => {
   assert.equal(actual, path.join("C:\\Users\\alice\\AppData\\Local", "opencode", "auth.json"));
 });
 
-test("resolves macOS default", () => {
+test("resolves macOS default from XDG data", () => {
   const actual = resolveAuthPath({
     platform: "darwin",
     env: {},
     homeDir: "/Users/alice",
   });
 
-  assert.equal(actual, "/Users/alice/Library/Application Support/opencode/auth.json");
+  assert.equal(actual, "/Users/alice/.local/share/opencode/auth.json");
 });
 
 test("resolves Linux default with XDG_DATA_HOME", () => {

@@ -18,6 +18,7 @@ type RegisteredCommand = {
 
 test("tui plugin registers codex usage as a slash command", async () => {
   let commands: RegisteredCommand[] = [];
+  let slotOrder = 0;
   const disposers: Array<() => void> = [];
   const api = {
     command: {
@@ -28,24 +29,34 @@ test("tui plugin registers codex usage as a slash command", async () => {
         return dispose;
       },
     },
+    ui: {
+      toast: () => undefined,
+    },
+    slots: {
+      register: (plugin: { order: number }) => {
+        slotOrder = plugin.order;
+        return "slot";
+      },
+    },
+    theme: { current: {} },
     lifecycle: {
       onDispose: (dispose: () => void) => {
         disposers.push(dispose);
         return () => undefined;
       },
     },
-    ui: {
-      toast: () => undefined,
-    },
-  };
+  } as any;
 
-  await CodexQuotaTuiPlugin(api);
+  await CodexQuotaTuiPlugin(api, undefined, undefined as any);
+  disposers.forEach((dispose) => dispose());
+
+  assert.equal(slotOrder, 150);
 
   assert.deepEqual(commands, [
     {
       title: "Codex usage",
       value: "codex-usage",
-      description: "Show Codex quota",
+      description: "Refresh Codex quota",
       category: "Codex",
       slash: { name: "codex-usage" },
       onSelect: commands[0]?.onSelect,

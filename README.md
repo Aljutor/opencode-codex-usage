@@ -2,7 +2,7 @@
 
 Small OpenCode plugin for Codex quota visibility.
 
-Instead of checking the web dashboard, you get quota toasts directly in OpenCode.
+Instead of checking the web dashboard, you get quota status directly in OpenCode.
 
 ## Screenshot
 
@@ -10,8 +10,9 @@ Instead of checking the web dashboard, you get quota toasts directly in OpenCode
 
 ## What it does
 
-- Shows Codex quota status as OpenCode toasts.
-- Runs a background check on startup and every 10 minutes.
+- Shows Codex quota status in the session sidebar below the Context/cost panel.
+- Shows quota status as OpenCode toasts when the configured threshold is reached.
+- Runs one background check on startup and every 10 minutes.
 - Keeps noise low: background checks only notify when quota reaches the configured threshold (`warn` by default, so `warn`/`critical`/`error`).
 - Includes JSON output mode for scripts and debugging.
 
@@ -51,7 +52,7 @@ npm install
 npm run build
 ```
 
-2. Link and auto-configure OpenCode:
+2. Link and configure OpenCode:
 
 ```bash
 npm link
@@ -66,7 +67,16 @@ Manual plugin path (if you prefer editing config directly):
 "<repo>"
 ```
 
-Add that path to both OpenCode's server plugin config and TUI plugin config.
+For the sidebar-only local setup, add the package root to `~/.config/opencode/tui.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["<repo>"]
+}
+```
+
+The TUI plugin owns polling, sidebar rendering, and quota toasts. Do not also register it in the server plugin list, or it will probe twice.
 
 ## Upgrading to 1.0.0
 
@@ -94,7 +104,7 @@ opencode-codex-usage --install
 
 Then restart OpenCode.
 
-The installer updates both OpenCode's server plugin config and TUI plugin config. The `/codex-usage` command is now registered by the TUI plugin, while background quota checks remain in the server plugin.
+The `/codex-usage` command, sidebar panel, background polling, and alerts are provided by the TUI plugin.
 
 ## CLI commands
 

@@ -263,7 +263,7 @@ const TOAST_VARIANT_BY_STATUS: Record<QuotaStatusState, ToastVariant> = {
   unknown: "warning",
 };
 
-const statusStateNormalized = (rawStatus: string | undefined): QuotaStatusState => {
+export const statusStateNormalized = (rawStatus: string | undefined): QuotaStatusState => {
   const state = statusState(rawStatus);
   if (state in STATUS_SEVERITY_RANK) return state as QuotaStatusState;
   return "unknown";

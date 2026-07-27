@@ -21,10 +21,6 @@ export const resolveAuthPath = ({
     return path.join(localAppData, "opencode", "auth.json");
   }
 
-  if (platform === "darwin") {
-    return path.join(homeDir, "Library", "Application Support", "opencode", "auth.json");
-  }
-
   const xdgDataHome = env.XDG_DATA_HOME ?? path.join(homeDir, ".local", "share");
   return path.join(xdgDataHome, "opencode", "auth.json");
 };
