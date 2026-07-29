@@ -93,11 +93,15 @@ const parseOptionalInt = (raw: string): number | null => {
 };
 
 export const normalizeUsagePercent = (raw: string): number | null => {
-  const parsed = Number.parseFloat(raw.trim());
+  const trimmed = raw.trim();
+  const parsed = Number.parseFloat(trimmed);
   if (!Number.isFinite(parsed)) return null;
 
-  const normalized = parsed >= 0 && parsed <= 1 ? parsed * 100 : parsed;
-  const bounded = Math.max(0, Math.min(100, normalized));
+  let value = parsed;
+  if (parsed >= 0 && parsed <= 1 && trimmed.includes(".")) {
+    value = parsed * 100;
+  }
+  const bounded = Math.max(0, Math.min(100, value));
   return Math.round(bounded);
 };
 
