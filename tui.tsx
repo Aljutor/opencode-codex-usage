@@ -1,8 +1,8 @@
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui";
 import { createMemo, createSignal, Show } from "solid-js";
 import type { ProbeSnapshot } from "./lib/codex-usage-probe.js";
-import { statusStateNormalized } from "./lib/codex-usage-toast-plugin.js";
-import { readCache, cachePath } from "./lib/codex-usage-cache.js";
+import { statusStateNormalized, isSupportedProbeModel } from "./lib/codex-usage-toast-plugin.js";
+import { readCache } from "./lib/codex-usage-cache.js";
 import { writeFile } from "node:fs/promises";
 import { resolveSignalPath } from "./lib/codex-usage-signal.js";
 
@@ -46,7 +46,7 @@ function QuotaPanel(props: {
   return (
     <box>
       <text fg={theme().text}>
-        <b>Codex quota</b>
+        <b>Codex Quota</b>
       </text>
       <Show
         when={props.busy() && !snapshot()}
@@ -86,9 +86,12 @@ function QuotaPanel(props: {
   );
 }
 
-const loadFromCache = async (): Promise<ProbeSnapshot | undefined> => {
+const loadFromCache = async (): Promise<{
+  snapshot: ProbeSnapshot | undefined;
+  sessionModel: string | undefined;
+}> => {
   const cached = await readCache();
-  return cached?.snapshot ?? undefined;
+  return { snapshot: cached?.snapshot ?? undefined, sessionModel: cached?.sessionModel ?? undefined };
 };
 
 const triggerRefresh = async (): Promise<void> => {
@@ -98,13 +101,15 @@ const triggerRefresh = async (): Promise<void> => {
 
 export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
   const [snapshot, setSnapshot] = createSignal<ProbeSnapshot | undefined>(undefined);
+  const [showPanel, setShowPanel] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
 
   let cacheTimer: ReturnType<typeof setInterval> | undefined;
 
   const pollCache = (): void => {
-    loadFromCache().then((next) => {
+    loadFromCache().then(({ snapshot: next, sessionModel }) => {
       if (next) setSnapshot(next);
+      setShowPanel(isSupportedProbeModel(sessionModel));
     }).catch(() => {
       // Cache read failure is non-fatal.
     });
@@ -112,14 +117,16 @@ export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
 
   api.slots.register({
     order: 150,
-    slots: { sidebar_content: () => <QuotaPanel api={api} snapshot={snapshot} busy={busy} /> },
+    slots: {
+      sidebar_content: () => (showPanel() ? <QuotaPanel api={api} snapshot={snapshot} busy={busy} /> : undefined),
+    },
   });
 
   const disposeCommand = api.command?.register(() => [
     {
       title: "Codex usage",
       value: "codex-usage",
-      description: "Refresh Codex quota",
+      description: "Refresh Codex Quota",
       category: "Codex",
       slash: { name: "codex-usage" },
       onSelect: () => {
@@ -129,8 +136,9 @@ export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
     },
   ]);
 
-  loadFromCache().then((next) => {
+  loadFromCache().then(({ snapshot: next, sessionModel }) => {
     if (next) setSnapshot(next);
+    setShowPanel(isSupportedProbeModel(sessionModel));
     setBusy(false);
   }).catch(() => {});
 

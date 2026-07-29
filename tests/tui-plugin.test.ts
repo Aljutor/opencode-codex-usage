@@ -56,7 +56,7 @@ test("tui plugin registers codex usage as a slash command", async () => {
     {
       title: "Codex usage",
       value: "codex-usage",
-      description: "Refresh Codex quota",
+      description: "Refresh Codex Quota",
       category: "Codex",
       slash: { name: "codex-usage" },
       onSelect: commands[0]?.onSelect,
