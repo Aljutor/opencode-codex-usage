@@ -86,12 +86,9 @@ function QuotaPanel(props: {
   );
 }
 
-const loadFromCache = async (): Promise<{
-  snapshot: ProbeSnapshot | undefined;
-  sessionModel: string | undefined;
-}> => {
+const loadFromCache = async (): Promise<ProbeSnapshot | undefined> => {
   const cached = await readCache();
-  return { snapshot: cached?.snapshot ?? undefined, sessionModel: cached?.sessionModel ?? undefined };
+  return cached?.snapshot ?? undefined;
 };
 
 const triggerRefresh = async (): Promise<void> => {
@@ -101,24 +98,69 @@ const triggerRefresh = async (): Promise<void> => {
 
 export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
   const [snapshot, setSnapshot] = createSignal<ProbeSnapshot | undefined>(undefined);
-  const [showPanel, setShowPanel] = createSignal(false);
+  const [sessionModels, setSessionModels] = createSignal<Record<string, string>>({});
   const [busy, setBusy] = createSignal(false);
 
   let cacheTimer: ReturnType<typeof setInterval> | undefined;
 
+  const modelForSession = (sessionID: string): string | undefined => {
+    const switchedModel = sessionModels()[sessionID];
+    if (switchedModel) return switchedModel;
+
+    const messages = api.state?.session?.messages?.(sessionID) ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (!message) continue;
+      const model = message.role === "user" ? message.model.modelID : message.modelID;
+      if (model) return model;
+    }
+
+    return undefined;
+  };
+
+  const currentSessionID = (): string | undefined => {
+    const route = api.route?.current;
+    if (!route) return undefined;
+    const sessionID = route.name === "session" ? route.params?.sessionID : undefined;
+    return typeof sessionID === "string" ? sessionID : undefined;
+  };
+
+  const currentModel = (): string | undefined => {
+    const sessionID = currentSessionID();
+    return sessionID ? modelForSession(sessionID) : undefined;
+  };
+
   const pollCache = (): void => {
-    loadFromCache().then(({ snapshot: next, sessionModel }) => {
+    loadFromCache().then((next) => {
       if (next) setSnapshot(next);
-      setShowPanel(isSupportedProbeModel(sessionModel));
     }).catch(() => {
       // Cache read failure is non-fatal.
     });
   };
 
+  const disposeModelSwitch = api.event?.on("session.next.model.switched", (event) => {
+    setSessionModels((current) => ({
+      ...current,
+      [event.properties.sessionID]: event.properties.model.id,
+    }));
+  });
+
+  const disposeSessionDeleted = api.event?.on("session.deleted", (event) => {
+    setSessionModels((current) => {
+      const next = { ...current };
+      delete next[event.properties.sessionID];
+      return next;
+    });
+  });
+
   api.slots.register({
     order: 150,
     slots: {
-      sidebar_content: () => (showPanel() ? <QuotaPanel api={api} snapshot={snapshot} busy={busy} /> : undefined),
+      sidebar_content: () => (
+        <Show when={isSupportedProbeModel(currentModel())}>
+          <QuotaPanel api={api} snapshot={snapshot} busy={busy} />
+        </Show>
+      ),
     },
   });
 
@@ -136,9 +178,8 @@ export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
     },
   ]);
 
-  loadFromCache().then(({ snapshot: next, sessionModel }) => {
+  loadFromCache().then((next) => {
     if (next) setSnapshot(next);
-    setShowPanel(isSupportedProbeModel(sessionModel));
     setBusy(false);
   }).catch(() => {});
 
@@ -146,6 +187,8 @@ export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
 
   api.lifecycle.onDispose(() => {
     if (cacheTimer) clearInterval(cacheTimer);
+    disposeModelSwitch?.();
+    disposeSessionDeleted?.();
     disposeCommand?.();
   });
 };
