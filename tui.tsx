@@ -107,6 +107,9 @@ export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
     const switchedModel = sessionModels()[sessionID];
     if (switchedModel) return switchedModel;
 
+    const sessionModel = api.state?.session?.get?.(sessionID)?.model?.id;
+    if (sessionModel) return sessionModel;
+
     const messages = api.state?.session?.messages?.(sessionID) ?? [];
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -142,6 +145,15 @@ export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
     setSessionModels((current) => ({
       ...current,
       [event.properties.sessionID]: event.properties.model.id,
+    }));
+  });
+
+  const disposeSessionUpdated = api.event?.on("session.updated", (event) => {
+    const model = event.properties.info.model?.id;
+    if (!model) return;
+    setSessionModels((current) => ({
+      ...current,
+      [event.properties.sessionID]: model,
     }));
   });
 
@@ -188,6 +200,7 @@ export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
   api.lifecycle.onDispose(() => {
     if (cacheTimer) clearInterval(cacheTimer);
     disposeModelSwitch?.();
+    disposeSessionUpdated?.();
     disposeSessionDeleted?.();
     disposeCommand?.();
   });
