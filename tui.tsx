@@ -1,16 +1,12 @@
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui";
 import { createMemo, createSignal, Show } from "solid-js";
-import { probeQuota } from "./lib/codex-usage-probe.js";
 import type { ProbeSnapshot } from "./lib/codex-usage-probe.js";
-import {
-  resolvePollMs,
-  resolveToastDurationMs,
-  resolveToastThreshold,
-  statusStateNormalized,
-  shouldToastForBackground,
-  shouldToastForBackgroundTransition,
-  toastBodyFromParsed,
-} from "./lib/codex-usage-toast-plugin.js";
+import { statusStateNormalized } from "./lib/codex-usage-toast-plugin.js";
+import { readCache, cachePath } from "./lib/codex-usage-cache.js";
+import { writeFile } from "node:fs/promises";
+import { resolveSignalPath } from "./lib/codex-usage-signal.js";
+
+const CACHE_POLL_MS = 5_000;
 
 const percent = (value: number | null | undefined): string =>
   Number.isFinite(value) ? `${Math.round(value as number)}%` : "-";
@@ -90,54 +86,28 @@ function QuotaPanel(props: {
   );
 }
 
-export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
-  const [snapshot, setSnapshot] = createSignal<ProbeSnapshot>();
-  const [busy, setBusy] = createSignal(false);
-  const pollMs = resolvePollMs();
-  const toastDurationMs = resolveToastDurationMs();
-  const threshold = resolveToastThreshold();
-  let previousStatus: string | undefined;
-  let running = false;
+const loadFromCache = async (): Promise<ProbeSnapshot | undefined> => {
+  const cached = await readCache();
+  return cached?.snapshot ?? undefined;
+};
 
-  const runProbe = async (manual = false): Promise<void> => {
-    if (running) return;
-    running = true;
-    setBusy(true);
-    try {
-      const next = await probeQuota();
-      setSnapshot(next);
-      const state = statusStateNormalized(next.status);
-      const shouldToast =
-        manual ||
-        (shouldToastForBackground(next.status, threshold) &&
-          shouldToastForBackgroundTransition(state, previousStatus));
-      previousStatus = state;
-      if (shouldToast)
-        api.ui.toast(
-          next.error
-            ? {
-                title: "Codex quota",
-                message: `Quota error | ${next.error}`,
-                variant: "error",
-                duration: toastDurationMs,
-              }
-            : toastBodyFromParsed(next, toastDurationMs),
-        );
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      const next = { status: "error", error: detail } satisfies ProbeSnapshot;
-      setSnapshot(next);
-      if (manual)
-        api.ui.toast({
-          title: "Codex quota",
-          message: `Quota error | ${detail}`,
-          variant: "error",
-          duration: toastDurationMs,
-        });
-    } finally {
-      running = false;
-      setBusy(false);
-    }
+const triggerRefresh = async (): Promise<void> => {
+  const signalPath = resolveSignalPath();
+  await writeFile(signalPath, `${Date.now()}\n`, { flag: "w" });
+};
+
+export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
+  const [snapshot, setSnapshot] = createSignal<ProbeSnapshot | undefined>(undefined);
+  const [busy, setBusy] = createSignal(false);
+
+  let cacheTimer: ReturnType<typeof setInterval> | undefined;
+
+  const pollCache = (): void => {
+    loadFromCache().then((next) => {
+      if (next) setSnapshot(next);
+    }).catch(() => {
+      // Cache read failure is non-fatal.
+    });
   };
 
   api.slots.register({
@@ -152,14 +122,22 @@ export const CodexQuotaTuiPlugin: TuiPlugin = async (api) => {
       description: "Refresh Codex quota",
       category: "Codex",
       slash: { name: "codex-usage" },
-      onSelect: () => void runProbe(true),
+      onSelect: () => {
+        setBusy(true);
+        triggerRefresh().then(pollCache).catch(() => {}).finally(() => setBusy(false));
+      },
     },
   ]);
-  const timer = setInterval(() => void runProbe(), pollMs);
-  void runProbe();
+
+  loadFromCache().then((next) => {
+    if (next) setSnapshot(next);
+    setBusy(false);
+  }).catch(() => {});
+
+  cacheTimer = setInterval(pollCache, CACHE_POLL_MS);
 
   api.lifecycle.onDispose(() => {
-    clearInterval(timer);
+    if (cacheTimer) clearInterval(cacheTimer);
     disposeCommand?.();
   });
 };

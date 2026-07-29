@@ -3,14 +3,25 @@ import path from "node:path";
 import { probeQuota, type ProbeSnapshot } from "./codex-usage-probe.js";
 import { statusState } from "./quota-format.js";
 import { resolveSignalPath } from "./codex-usage-signal.js";
+import {
+  acquireLock,
+  releaseLock,
+  readCache,
+  writeCache,
+  isCacheFresh,
+  loadCacheOrInit,
+  type QuotaStatusState,
+} from "./codex-usage-cache.js";
 import { z } from "zod";
 
 const DEFAULT_POLL_MS = 10 * 60 * 1000;
 const POLL_MS_ENV = "OPENCODE_CODEX_QUOTA_POLL_MS";
 const TOAST_THRESHOLD_ENV = "OPENCODE_CODEX_QUOTA_TOAST_THRESHOLD";
 const TOAST_DURATION_MS_ENV = "OPENCODE_CODEX_QUOTA_TOAST_DURATION_MS";
+const TOAST_COOLDOWN_MS_ENV = "OPENCODE_CODEX_QUOTA_TOAST_COOLDOWN_MS";
 const DEFAULT_TOAST_DURATION_MS = 5000;
 const DEFAULT_TOAST_THRESHOLD = "warn";
+const DEFAULT_TOAST_COOLDOWN_MS = 300_000;
 const SIGNAL_WATCH_MS = 1500;
 
 const TOAST_THRESHOLDS = ["warn", "critical", "error", "always", "never"] as const;
@@ -245,8 +256,6 @@ export const isSupportedProbeModel = (model: string | undefined): boolean => {
   return normalized.includes("codex") || normalized.startsWith("gpt-");
 };
 
-type QuotaStatusState = "ok" | "warn" | "critical" | "error" | "unknown";
-
 const STATUS_SEVERITY_RANK: Record<QuotaStatusState, number> = {
   ok: 0,
   unknown: 1,
@@ -431,23 +440,64 @@ export const resolveToastDurationMs = (
   return parsed.data;
 };
 
+export const resolveToastCooldownMs = (
+  env: NodeJS.ProcessEnv = process.env,
+  fallbackMs = DEFAULT_TOAST_COOLDOWN_MS,
+): number => {
+  const raw = env[TOAST_COOLDOWN_MS_ENV];
+  if (!raw?.trim()) return fallbackMs;
+
+  const parsed = PollMsSchema.safeParse(raw);
+  if (!parsed.success) return fallbackMs;
+
+  return parsed.data;
+};
+
+export const isSessionIdleEvent = (eventType: string): boolean => {
+  return eventType === "session.idle";
+};
+
 export const CodexQuotaToastPlugin = ({ client, worktree }: PluginContext) => {
   const pollMs = resolvePollMs();
   const toastThreshold = resolveToastThreshold();
   const toastDurationMs = resolveToastDurationMs();
+  const toastCooldownMs = resolveToastCooldownMs();
   const forceStartupToast = toastThreshold === "always";
 
   let running = false;
   let pendingForce = false;
   let started = false;
   let lastBackgroundStatus: QuotaStatusState | undefined;
+  let lastToastMsByStatus: Record<string, number> = {
+    ok: 0,
+    warn: 0,
+    critical: 0,
+    error: 0,
+    unknown: 0,
+  };
   let sessionModel: string | undefined;
+  let lastIdleSessionID: string | undefined;
+  let lastIdleTimestamp = 0;
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let triggerTimer: ReturnType<typeof setInterval> | undefined;
   const signalPath = resolveSignalPath();
   const signalPathNormalized = signalPath.replace(/\\/g, "/");
   const signalBasename = path.posix.basename(signalPathNormalized);
   let signalRevision = 0;
+
+  readCache().then((cached) => {
+    if (!cached) return;
+    const restored = loadCacheOrInit(cached);
+    if (restored.lastBackgroundStatus !== undefined) {
+      lastBackgroundStatus = restored.lastBackgroundStatus;
+    }
+    lastToastMsByStatus = restored.lastToastMsByStatus;
+    if (restored.sessionModel !== undefined) {
+      sessionModel = restored.sessionModel;
+    }
+  }).catch(() => {
+    // Cache read is best-effort on startup.
+  });
 
   const logPluginError = async (message: string, extra: Record<string, unknown>): Promise<void> => {
     if (!client.app?.log) return;
@@ -484,6 +534,51 @@ export const CodexQuotaToastPlugin = ({ client, worktree }: PluginContext) => {
     );
   };
 
+  const probeAndMaybeToast = async (
+    snapshot: ProbeSnapshot,
+    force: boolean,
+  ): Promise<void> => {
+    const probeError = snapshot.error?.trim();
+    if (probeError) {
+      await logPluginError("quota probe failed", { detail: probeError, worktree });
+      return;
+    }
+
+    const normalizedStatus = statusStateNormalized(snapshot.status);
+    const now = Date.now();
+
+    if (!force) {
+      const meetsThreshold = shouldToastForBackground(snapshot.status, toastThreshold);
+      if (!meetsThreshold) {
+        lastBackgroundStatus = normalizedStatus;
+        return;
+      }
+
+      const isWorsening = shouldToastForBackgroundTransition(normalizedStatus, lastBackgroundStatus);
+
+      if (isWorsening) {
+        lastBackgroundStatus = normalizedStatus;
+      } else if (normalizedStatus === lastBackgroundStatus) {
+        const elapsed = now - (lastToastMsByStatus[normalizedStatus] ?? 0);
+        if (elapsed < toastCooldownMs) {
+          lastBackgroundStatus = normalizedStatus;
+          return;
+        }
+        lastBackgroundStatus = normalizedStatus;
+      } else {
+        lastBackgroundStatus = normalizedStatus;
+        return;
+      }
+    } else {
+      lastBackgroundStatus = normalizedStatus;
+    }
+
+    lastToastMsByStatus[normalizedStatus] = now;
+    await client.tui.showToast({
+      body: toastBodyFromParsed(snapshot, toastDurationMs),
+    });
+  };
+
   const runProbe = async ({
     force = false,
     showFailureToast = false,
@@ -496,7 +591,54 @@ export const CodexQuotaToastPlugin = ({ client, worktree }: PluginContext) => {
     running = true;
 
     try {
-      const parsed = await probeQuota({ model: sessionModel });
+      const hasLock = await acquireLock(2000);
+      let parsed: ProbeSnapshot;
+
+      if (hasLock) {
+        const cached = await readCache();
+        if (!force && cached && isCacheFresh(cached)) {
+          parsed = cached.snapshot;
+          const restored = loadCacheOrInit(cached);
+          if (restored.lastBackgroundStatus !== undefined) {
+            lastBackgroundStatus = restored.lastBackgroundStatus;
+          }
+          lastToastMsByStatus = restored.lastToastMsByStatus;
+          if (restored.sessionModel !== undefined) {
+            sessionModel = restored.sessionModel;
+          }
+        } else {
+          parsed = await probeQuota({ model: sessionModel });
+          await writeCache(
+            parsed,
+            lastBackgroundStatus,
+            lastToastMsByStatus,
+            sessionModel,
+          );
+        }
+        await releaseLock();
+      } else {
+        const cached = await readCache();
+        if (cached && isCacheFresh(cached)) {
+          parsed = cached.snapshot;
+          const restored = loadCacheOrInit(cached);
+          if (restored.lastBackgroundStatus !== undefined) {
+            lastBackgroundStatus = restored.lastBackgroundStatus;
+          }
+          lastToastMsByStatus = restored.lastToastMsByStatus;
+          if (restored.sessionModel !== undefined) {
+            sessionModel = restored.sessionModel;
+          }
+        } else {
+          parsed = await probeQuota({ model: sessionModel });
+          await writeCache(
+            parsed,
+            lastBackgroundStatus,
+            lastToastMsByStatus,
+            sessionModel,
+          );
+        }
+      }
+
       const probeError = parsed.error?.trim();
       if (probeError) {
         await logPluginError("quota probe failed", { detail: probeError, worktree });
@@ -513,24 +655,7 @@ export const CodexQuotaToastPlugin = ({ client, worktree }: PluginContext) => {
         return { failed: true, detail: probeError };
       }
 
-      const normalizedStatus = statusStateNormalized(parsed.status);
-      if (!force) {
-        const shouldToastByThreshold = shouldToastForBackground(parsed.status, toastThreshold);
-        const shouldToastByTransition = shouldToastForBackgroundTransition(
-          normalizedStatus,
-          lastBackgroundStatus,
-        );
-        lastBackgroundStatus = normalizedStatus;
-        if (!shouldToastByThreshold || !shouldToastByTransition) {
-          return { failed: false };
-        }
-      } else {
-        lastBackgroundStatus = normalizedStatus;
-      }
-
-      await client.tui.showToast({
-        body: toastBodyFromParsed(parsed, toastDurationMs),
-      });
+      await probeAndMaybeToast(parsed, force);
       return { failed: false };
     } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -634,6 +759,8 @@ export const CodexQuotaToastPlugin = ({ client, worktree }: PluginContext) => {
     started = false;
     lastBackgroundStatus = undefined;
     sessionModel = undefined;
+    lastIdleSessionID = undefined;
+    lastIdleTimestamp = 0;
     stopBackgroundWorkers();
   };
 
@@ -662,6 +789,21 @@ export const CodexQuotaToastPlugin = ({ client, worktree }: PluginContext) => {
 
       if (isSessionActivityEvent(event.type)) {
         ensureBackgroundWorkersStarted();
+        return;
+      }
+
+      if (isSessionIdleEvent(event.type)) {
+        const sessionID = stringFromUnknown(event.properties?.sessionID);
+        if (
+          sessionID &&
+          sessionID === lastIdleSessionID &&
+          Date.now() - lastIdleTimestamp < 2000
+        ) {
+          return;
+        }
+        lastIdleSessionID = sessionID;
+        lastIdleTimestamp = Date.now();
+        runProbeSafely({ force: false, showFailureToast: false });
         return;
       }
 
